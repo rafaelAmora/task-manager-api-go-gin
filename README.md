@@ -2,9 +2,10 @@
 
 ![Go](https://img.shields.io/badge/Go-1.21-blue)
 ![Gin](https://img.shields.io/badge/Gin-Framework-lightgrey)
-![Status](https://img.shields.io/badge/status-learning-green)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-blue)
+![Status](https://img.shields.io/badge/status-em%20evolução-green)
 
-Uma API REST simples de gerenciamento de tarefas, desenvolvida em Go com o framework Gin. Este projeto foi criado com fins de aprendizado, explorando conceitos de desenvolvimento backend como roteamento HTTP, manipulação de JSON e estruturação de uma API RESTful.
+Uma API REST de gerenciamento de tarefas desenvolvida em Go com o framework Gin e persistência de dados com PostgreSQL. O projeto evoluiu de um único arquivo `main.go` para uma **arquitetura em camadas** (Controller → Service → Repository), separando claramente as responsabilidades de cada parte do sistema.
 
 ---
 
@@ -12,8 +13,11 @@ Uma API REST simples de gerenciamento de tarefas, desenvolvida em Go com o frame
 
 - [Go](https://golang.org/) — Linguagem principal
 - [Gin](https://github.com/gin-gonic/gin) — Framework web para roteamento e tratamento de requisições HTTP
+- [PostgreSQL](https://www.postgresql.org/) — Banco de dados relacional
+- [sqlx](https://github.com/jmoiron/sqlx) — Extensão do `database/sql` para facilitar queries e mapeamento de structs
+- [lib/pq](https://github.com/lib/pq) — Driver PostgreSQL para Go
 - [Google UUID](https://github.com/google/uuid) — Geração de identificadores únicos
-- Armazenamento em memória (`map`) — Sem banco de dados por enquanto
+- [godotenv](https://github.com/joho/godotenv) — Carregamento de variáveis de ambiente via `.env`
 
 ---
 
@@ -22,7 +26,8 @@ Uma API REST simples de gerenciamento de tarefas, desenvolvida em Go com o frame
 - [x] Criar uma nova tarefa
 - [x] Listar todas as tarefas
 - [x] Buscar uma tarefa pelo ID
-- [x] Atualizar os dados de uma tarefa
+- [x] Contar o total de tarefas
+- [x] Atualizar parcialmente uma tarefa (PATCH)
 - [x] Deletar uma tarefa
 
 ---
@@ -30,13 +35,57 @@ Uma API REST simples de gerenciamento de tarefas, desenvolvida em Go com o frame
 ## 🗂️ Estrutura do Projeto
 
 ```
-taskcrud/
+task-manager-api-go-gin/
+├── .env
+├── .gitignore
 ├── go.mod
 ├── go.sum
-└── main.go
+├── main.go
+├── db/
+│   └── postgres.go          # Conexão com o banco e criação da tabela
+└── internal/
+    ├── controller/
+    │   └── task_controller.go   # Camada HTTP: recebe, delega e responde
+    ├── model/
+    │   └── task.go              # Structs de domínio e inputs
+    ├── repository/
+    │   └── task_repository.go   # Camada de dados: queries SQL
+    └── service/
+        └── task_service.go      # Regras de negócio e validações
 ```
 
-> Por ser um projeto introdutório, toda a lógica está concentrada em `main.go`. A separação em camadas (handlers, services, repositories) está listada como melhoria futura.
+---
+
+## 🏗️ Arquitetura em Camadas
+
+O projeto adota o padrão de separação de responsabilidades em 3 camadas, orquestradas pelo `main.go`:
+
+```
+HTTP Request
+     │
+     ▼
+┌─────────────┐
+│  Controller │  Recebe a requisição, extrai dados, devolve a resposta HTTP.
+│             │  Não conhece o banco. Não contém regras de negócio.
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│   Service   │  Contém as regras de negócio e validações (ex: título mínimo de 3 chars).
+│             │  Não conhece HTTP. Não escreve SQL.
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│ Repository  │  Única camada que fala com o banco.
+│             │  Executa queries e mapeia resultados para structs.
+└──────┬──────┘
+       │
+       ▼
+  PostgreSQL
+```
+
+A comunicação entre as camadas é feita via **interfaces**, o que facilita a troca de implementações (ex: banco de dados diferente em testes).
 
 ---
 
@@ -44,22 +93,36 @@ taskcrud/
 
 ### Pré-requisitos
 
-- [Go 1.21+](https://golang.org/dl/) instalado na máquina
+- [Go 1.21+](https://golang.org/dl/) instalado
+- [PostgreSQL](https://www.postgresql.org/download/) instalado e rodando
 
 ### Passo a passo
 
 **1. Clone o repositório:**
 ```bash
-git clone https://github.com/rafaelAmora/taskcrud.git
-cd taskcrud
+git clone https://github.com/rafaelAmora/task-manager-api-go-gin.git
+cd task-manager-api-go-gin
 ```
 
-**2. Instale as dependências:**
+**2. Configure as variáveis de ambiente:**
+
+Crie um arquivo `.env` na raiz do projeto:
+```env
+DB_NAME=seu_banco
+DB_USER=seu_usuario
+DB_PASSWORD=sua_senha
+DB_HOST=localhost  # opcional, padrão: localhost
+PORT=8080          # opcional, padrão: 8080
+```
+
+> A tabela `tasks` é criada automaticamente na primeira execução, caso não exista.
+
+**3. Instale as dependências:**
 ```bash
 go mod tidy
 ```
 
-**3. Inicie o servidor:**
+**4. Inicie o servidor:**
 ```bash
 go run main.go
 ```
@@ -70,13 +133,16 @@ O servidor estará disponível em `http://localhost:8080`.
 
 ## 🛣️ Rotas da API
 
-| Método   | Rota            | Descrição                     |
-|----------|-----------------|-------------------------------|
-| `GET`    | `/tasks`        | Lista todas as tarefas        |
-| `POST`   | `/tasks`        | Cria uma nova tarefa          |
-| `GET`    | `/tasks/:id`    | Busca uma tarefa pelo ID      |
-| `PATCH`  | `/tasks/:id`    | Atualiza uma tarefa existente |
-| `DELETE` | `/tasks/:id`    | Deleta uma tarefa             |
+| Método   | Rota            | Descrição                          |
+|----------|-----------------|------------------------------------|
+| `GET`    | `/tasks`        | Lista todas as tarefas             |
+| `GET`    | `/tasks/count`  | Retorna o total de tarefas         |
+| `GET`    | `/tasks/:id`    | Busca uma tarefa pelo ID           |
+| `POST`   | `/tasks`        | Cria uma nova tarefa               |
+| `PATCH`  | `/tasks/:id`    | Atualiza parcialmente uma tarefa   |
+| `DELETE` | `/tasks/:id`    | Deleta uma tarefa                  |
+
+> ⚠️ A rota `/tasks/count` deve ser declarada **antes** de `/tasks/:id` para o Gin não interpretar `"count"` como um ID.
 
 ---
 
@@ -99,7 +165,7 @@ O servidor estará disponível em `http://localhost:8080`.
   "title": "Estudar Go",
   "description": "Aprender sobre structs, interfaces e goroutines",
   "done": false,
-  "createdAt": "2025-01-15T10:30:00Z"
+  "created_at": "2025-01-15T10:30:00Z"
 }
 ```
 
@@ -115,9 +181,20 @@ O servidor estará disponível em `http://localhost:8080`.
     "title": "Estudar Go",
     "description": "Aprender sobre structs, interfaces e goroutines",
     "done": false,
-    "createdAt": "2025-01-15T10:30:00Z"
+    "created_at": "2025-01-15T10:30:00Z"
   }
 ]
+```
+
+---
+
+### Contar tarefas — `GET /tasks/count`
+
+**Response `200 OK`:**
+```json
+{
+  "total": 5
+}
 ```
 
 ---
@@ -131,14 +208,14 @@ O servidor estará disponível em `http://localhost:8080`.
   "title": "Estudar Go",
   "description": "Aprender sobre structs, interfaces e goroutines",
   "done": false,
-  "createdAt": "2025-01-15T10:30:00Z"
+  "created_at": "2025-01-15T10:30:00Z"
 }
 ```
 
 **Response `404 Not Found`:**
 ```json
 {
-  "message": "task not found"
+  "error": "tarefa não encontrada"
 }
 ```
 
@@ -146,12 +223,12 @@ O servidor estará disponível em `http://localhost:8080`.
 
 ### Atualizar uma tarefa — `PATCH /tasks/:id`
 
+Apenas os campos enviados são atualizados.
+
 **Request body:**
 ```json
 {
-  "title": "Estudar Go",
-  "description": "Revisar goroutines e channels",
-  "done": true
+  "description": "Revisar goroutines e channels"
 }
 ```
 
@@ -161,8 +238,8 @@ O servidor estará disponível em `http://localhost:8080`.
   "id": "a3f1c2d4-...",
   "title": "Estudar Go",
   "description": "Revisar goroutines e channels",
-  "done": true,
-  "createdAt": "2025-01-15T10:30:00Z"
+  "done": false,
+  "created_at": "2025-01-15T10:30:00Z"
 }
 ```
 
@@ -170,26 +247,36 @@ O servidor estará disponível em `http://localhost:8080`.
 
 ### Deletar uma tarefa — `DELETE /tasks/:id`
 
-**Response `204 No Content`** (sem corpo na resposta)
+**Response `204 No Content`**
+
+---
+
+## ⚠️ Validações e Erros
+
+O Service aplica validações de negócio antes de salvar os dados:
+
+| Situação                        | Status HTTP | Mensagem de erro                          |
+|---------------------------------|-------------|-------------------------------------------|
+| Título vazio                    | `422`       | `o título não pode estar vazio`           |
+| Título com menos de 3 caracteres | `422`      | `o título precisa ter pelo menos 3 caracteres` |
+| Descrição vazia                 | `422`       | `a descrição não pode estar vazia`        |
+| Tarefa não encontrada           | `404`       | `tarefa não encontrada`                   |
+| Erro interno                    | `500`       | `erro interno do servidor`                |
 
 ---
 
 ## 🔮 Melhorias Futuras
 
-À medida que for evoluindo nos estudos, pretendo incorporar as seguintes melhorias:
-
-- [ ] **Banco de dados** — Integração com PostgreSQL ou SQLite usando GORM
-- [ ] **Arquitetura em camadas** — Separar o projeto em `handlers`, `services` e `repositories`
 - [ ] **Autenticação** — Implementar JWT para proteger as rotas
-- [ ] **Variáveis de ambiente** — Usar `.env` para configurações sensíveis
-- [ ] **Testes** — Adicionar testes unitários e de integração
-- [ ] **Dockerização** — Containerizar a aplicação com Docker
+- [ ] **Testes** — Adicionar testes unitários e de integração (as interfaces já facilitam o mock do Repository)
+- [ ] **Dockerização** — Containerizar a aplicação com Docker e Docker Compose (incluindo o PostgreSQL)
 - [ ] **Paginação** — Suporte a paginação na listagem de tarefas
+- [ ] **Migrations** — Gerenciar o schema do banco com uma ferramenta de migrations (ex: `golang-migrate`)
 
 ---
 
 ## 💬 Feedback
 
-Este é um projeto de aprendizado, então estou aberto a sugestões de melhoria, boas práticas ou críticas construtivas.
+Este é um projeto de aprendizado em constante evolução. Sugestões de boas práticas e críticas construtivas são muito bem-vindas!
 
-Se quiser contribuir ou apontar algo que pode ser melhorado, fique à vontade para abrir uma [issue](https://github.com/rafaelAmora/taskcrud/issues) ou entrar em contato.
+Abra uma [issue](https://github.com/rafaelAmora/task-manager-api-go-gin/issues) ou entre em contato. 🚀
